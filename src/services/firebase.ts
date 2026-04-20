@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app'
 import { getAuth } from 'firebase/auth'
-import { getFirestore } from 'firebase/firestore'
+import { initializeFirestore } from 'firebase/firestore'
 
 const firebaseConfig = {
   apiKey:
@@ -24,7 +24,10 @@ const firebaseConfig = {
 
 export const firebaseApp = initializeApp(firebaseConfig)
 export const auth = getAuth(firebaseApp)
-export const db = getFirestore(firebaseApp)
+export const db = initializeFirestore(firebaseApp, {
+  // Mejora compatibilidad en GitHub Pages y redes donde WebChannel puede fallar.
+  experimentalAutoDetectLongPolling: true,
+})
 
 export const collections = {
   products: 'products',
