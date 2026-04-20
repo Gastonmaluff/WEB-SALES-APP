@@ -80,6 +80,9 @@ export async function updateUserProfile(
   })
 }
 
-export function subscribeToAuth(callback: (user: User | null) => void) {
-  return onAuthStateChanged(auth, callback)
+export function subscribeToAuth(
+  callback: (user: User | null) => void,
+  onError?: (error: Error) => void,
+) {
+  return onAuthStateChanged(auth, callback, onError)
 }
