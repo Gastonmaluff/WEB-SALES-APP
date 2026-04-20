@@ -2,6 +2,7 @@ import { ArrowRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { MotionPage } from '../components/layout/MotionPage'
+import { ScrollBoxSequence } from '../components/home/ScrollBoxSequence'
 import { ProductCard } from '../components/product/ProductCard'
 import { Button } from '../components/ui/Button'
 import { Skeleton } from '../components/ui/Skeleton'
@@ -59,7 +60,9 @@ export function HomePage() {
         </div>
       </section>
 
-      <section className="mt-10 space-y-4">
+      <ScrollBoxSequence />
+
+      <section className="mt-12 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="font-title text-2xl text-slate-900 md:text-3xl">
             Destacados
