@@ -11,6 +11,7 @@ export function AdminRoute() {
     isAdmin,
     adminAccessReason,
     authError,
+    refreshProfile,
   } = useAuth()
 
   useEffect(() => {
@@ -54,7 +55,12 @@ export function AdminRoute() {
         {authError ? (
           <p className="mt-2 text-xs text-rose-600">Detalle: {authError}</p>
         ) : null}
-        <div className="mt-6 flex justify-center">
+        <div className="mt-6 flex flex-wrap justify-center gap-2">
+          {user ? (
+            <Button variant="secondary" onClick={() => void refreshProfile()}>
+              Reintentar validacion
+            </Button>
+          ) : null}
           <Link to="/">
             <Button>Volver al inicio</Button>
           </Link>

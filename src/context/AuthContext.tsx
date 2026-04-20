@@ -10,6 +10,7 @@ import {
 import type { User } from 'firebase/auth'
 import {
   getUserProfile,
+  isTimeoutError,
   loginUser,
   logoutUser,
   registerUser,
@@ -53,22 +54,11 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs = 12000): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => {
-          reject(new Error(`Tiempo de espera agotado (${timeoutMs}ms).`))
-        }, timeoutMs)
-      }),
-    ])
-  } finally {
-    if (timer) {
-      clearTimeout(timer)
-    }
-  }
+const PROFILE_TIMEOUT_MS = 10000
+const PROFILE_RETRY_TIMEOUT_MS = 18000
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 export function AuthProvider({ children }: PropsWithChildren) {
@@ -79,6 +69,49 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [adminAccessReason, setAdminAccessReason] = useState<string | null>(null)
   const [authError, setAuthError] = useState<string | null>(null)
 
+  const applyProfileResult = useCallback((uid: string, nextProfile: UserProfile | null) => {
+    if (!nextProfile) {
+      console.log('[Auth] documento no encontrado en Firestore para uid:', uid)
+      setProfile(null)
+      setAdminAccessReason('No se encontro el perfil del usuario.')
+      return
+    }
+
+    console.log('[Auth] documento encontrado para uid:', uid)
+    console.log('[Auth] rol detectado:', nextProfile.role)
+    setProfile(nextProfile)
+
+    if (nextProfile.role === 'admin') {
+      setAdminAccessReason(null)
+      console.log('[Auth] acceso admin concedido.')
+    } else {
+      setAdminAccessReason('No tienes permisos para acceder al panel admin.')
+      console.log(
+        '[Auth] acceso admin bloqueado: rol no autorizado ->',
+        nextProfile.role,
+      )
+    }
+  }, [])
+
+  const fetchProfileWithRetry = useCallback(async (uid: string) => {
+    try {
+      return await getUserProfile(uid, {
+        serverTimeoutMs: PROFILE_TIMEOUT_MS,
+        allowCacheFallback: true,
+      })
+    } catch (error) {
+      if (!isTimeoutError(error)) {
+        throw error
+      }
+      console.warn('[Auth] timeout inicial leyendo perfil. Reintentando...', uid)
+      await sleep(900)
+      return getUserProfile(uid, {
+        serverTimeoutMs: PROFILE_RETRY_TIMEOUT_MS,
+        allowCacheFallback: true,
+      })
+    }
+  }, [])
+
   const refreshProfile = useCallback(async () => {
     if (!user) {
       setProfile(null)
@@ -86,35 +119,34 @@ export function AuthProvider({ children }: PropsWithChildren) {
       return
     }
 
+    setLoading(true)
+    setCheckingPermissions(true)
+    setAuthError(null)
+
     try {
-      const nextProfile = await withTimeout(getUserProfile(user.uid))
-      setProfile(nextProfile)
-
-      if (!nextProfile) {
-        console.log(
-          '[Auth] refreshProfile: documento de usuario no encontrado',
-          user.uid,
-        )
-        setAdminAccessReason('No se encontro el perfil del usuario.')
-        return
-      }
-
-      console.log('[Auth] refreshProfile: rol detectado ->', nextProfile.role)
-      setAdminAccessReason(
-        nextProfile.role === 'admin'
-          ? null
-          : 'No tienes permisos para acceder al panel admin.',
-      )
+      const nextProfile = await fetchProfileWithRetry(user.uid)
+      console.log('[Auth] refreshProfile ejecutado para uid:', user.uid)
+      applyProfileResult(user.uid, nextProfile)
     } catch (error) {
       console.error('[Auth] refreshProfile error:', error)
+      const timeout = isTimeoutError(error)
       setAuthError(
-        error instanceof Error
-          ? error.message
-          : 'Error inesperado al actualizar el perfil.',
+        timeout
+          ? 'No se pudo conectar con Firestore para validar permisos.'
+          : error instanceof Error
+            ? error.message
+            : 'Error inesperado al actualizar el perfil.',
       )
-      setAdminAccessReason('Error validando permisos.')
+      setAdminAccessReason(
+        timeout
+          ? 'No pudimos validar permisos por un problema de conexion.'
+          : 'Error validando permisos.',
+      )
+    } finally {
+      setCheckingPermissions(false)
+      setLoading(false)
     }
-  }, [user])
+  }, [applyProfileResult, fetchProfileWithRetry, user])
 
   useEffect(() => {
     let isMounted = true
@@ -136,7 +168,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       setAdminAccessReason('Error al validar permisos de acceso.')
       setCheckingPermissions(false)
       setLoading(false)
-    }, 15000)
+    }, 20000)
 
     const unsubscribe = subscribeToAuth(
       async (firebaseUser) => {
@@ -172,48 +204,30 @@ export function AuthProvider({ children }: PropsWithChildren) {
         console.log('[Auth] uid detectado:', firebaseUser.uid)
 
         try {
-          const nextProfile = await withTimeout(getUserProfile(firebaseUser.uid))
+          const nextProfile = await fetchProfileWithRetry(firebaseUser.uid)
           if (!isMounted || currentRequestId !== requestId) {
             return
           }
-
-          if (!nextProfile) {
-            console.log(
-              '[Auth] documento no encontrado en Firestore para uid:',
-              firebaseUser.uid,
-            )
-            setProfile(null)
-            setAdminAccessReason('No se encontro el perfil del usuario.')
-            return
-          }
-
-          console.log('[Auth] documento encontrado para uid:', firebaseUser.uid)
-          console.log('[Auth] rol detectado:', nextProfile.role)
-
-          setProfile(nextProfile)
-
-          if (nextProfile.role === 'admin') {
-            setAdminAccessReason(null)
-            console.log('[Auth] acceso admin concedido.')
-          } else {
-            setAdminAccessReason('No tienes permisos para acceder al panel admin.')
-            console.log(
-              '[Auth] acceso admin bloqueado: rol no autorizado ->',
-              nextProfile.role,
-            )
-          }
+          applyProfileResult(firebaseUser.uid, nextProfile)
         } catch (error) {
           console.error('[Auth] error al validar auth/permisos:', error)
           if (!isMounted || currentRequestId !== requestId) {
             return
           }
+          const timeout = isTimeoutError(error)
           setProfile(null)
           setAuthError(
-            error instanceof Error
-              ? error.message
-              : 'No se pudo validar la sesion.',
+            timeout
+              ? 'No se pudo conectar con Firestore para validar permisos.'
+              : error instanceof Error
+                ? error.message
+                : 'No se pudo validar la sesion.',
           )
-          setAdminAccessReason('Error al validar permisos de acceso.')
+          setAdminAccessReason(
+            timeout
+              ? 'No pudimos validar permisos por un problema de conexion.'
+              : 'Error al validar permisos de acceso.',
+          )
         } finally {
           if (isMounted && currentRequestId === requestId) {
             setCheckingPermissions(false)
@@ -244,7 +258,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       unsubscribe()
       console.log('[Auth] cleanup listener de autenticacion ejecutado.')
     }
-  }, [])
+  }, [applyProfileResult, fetchProfileWithRetry])
 
   const value = useMemo<AuthContextValue>(
     () => ({
