@@ -5,6 +5,10 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
     function isAdmin() {
       return isAuthenticated()
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
@@ -16,9 +20,22 @@ service cloud.firestore {
     // y endurecer estas reglas.
 
     match /users/{userId} {
-      allow create: if isAuthenticated() && request.auth.uid == userId;
-      allow read, update: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
-      allow delete: if isAdmin();
+      // Evita evaluaciones circulares al leer el propio perfil:
+      // primero resuelve "owner", y solo usa isAdmin para otros usuarios.
+      allow create: if isOwner(userId)
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.role == 'customer';
+
+      allow read: if isOwner(userId);
+      allow read: if isAuthenticated() && request.auth.uid != userId && isAdmin();
+
+      // El usuario puede editar su perfil, pero no escalar privilegios ni mutar identidad.
+      allow update: if isOwner(userId)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.role == resource.data.role;
+
+      allow update, delete: if isAuthenticated() && request.auth.uid != userId && isAdmin();
     }
 
     match /products/{productId} {
